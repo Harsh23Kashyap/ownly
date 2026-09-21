@@ -26,22 +26,23 @@ describe('revocation cache', () => {
   beforeEach(clearRevocations)
   afterEach(vi.restoreAllMocks)
 
-  it('records, looks up, and reports revocation by hash', () => {
-    recordRevocation(rec({ certHash: 'X' }))
-    expect(isRevoked('X')).toBe(true)
-    expect(lookupRevocation('X')?.reason).toBe(ReasonCode.PrivilegeWithdrawn)
+  it('records, looks up, and reports revocation by certificate name', () => {
+    recordRevocation(rec({ certName: '/workspace/alice/v=1' }))
+    expect(isRevoked('/workspace/alice/v=1')).toBe(true)
+    expect(lookupRevocation('/workspace/alice/v=1')?.reason).toBe(ReasonCode.PrivilegeWithdrawn)
     expect(isRevoked('UNKNOWN')).toBe(false)
   })
 
-  it('latest-wins on cert hash', () => {
-    recordRevocation(rec({ certHash: 'Y', reason: ReasonCode.PrivilegeWithdrawn }))
-    recordRevocation(rec({ certHash: 'Y', reason: ReasonCode.CessationOfOperation }))
-    expect(lookupRevocation('Y')?.reason).toBe(ReasonCode.CessationOfOperation)
+  it('keeps certificate versions distinct when they share a public key', () => {
+    recordRevocation(rec({ certName: '/workspace/alice/v=1', certHash: 'Y' }))
+    recordRevocation(rec({ certName: '/workspace/alice/v=2', certHash: 'Y' }))
+    expect(isRevoked('/workspace/alice/v=1')).toBe(true)
+    expect(isRevoked('/workspace/alice/v=2')).toBe(true)
   })
 
   it('does NOT emit cert-revoked when recording (recursion guard)', () => {
     const spy = vi.spyOn(GlobalBus, 'emit')
-    recordRevocation(rec({ certHash: 'Z' }))
+    recordRevocation(rec({ certName: '/workspace/alice/v=3' }))
     expect(spy.mock.calls.filter(([e]) => e === 'cert-revoked')).toHaveLength(0)
   })
 })
@@ -106,25 +107,26 @@ describe('cert-revoked e2e (Go bridge → handler → cache)', () => {
       reason: ReasonCode.PrivilegeWithdrawn,
       invalidity_time: 0,
       cert_hash: 'abcdef0123456789',
-      cert_name: '/alice@example.com/wksp/alice@example.com/KEY/k1/self/v=1',
+      cert_name: '/alice@example.com/wksp/alice@example.com/KEY/k1/anchor/v=1',
     })
 
     expect(handler).toHaveBeenCalledOnce()
-    expect(isRevoked('abcdef0123456789')).toBe(true)
-    const cached = lookupRevocation('abcdef0123456789')
+    const certName = '/alice@example.com/wksp/alice@example.com/KEY/k1/anchor/v=1'
+    expect(isRevoked(certName)).toBe(true)
+    const cached = lookupRevocation(certName)
     expect(cached?.reason).toBe(ReasonCode.PrivilegeWithdrawn)
-    expect(cached?.certName).toBe('/alice@example.com/wksp/alice@example.com/KEY/k1/self/v=1')
+    expect(cached?.certName).toBe(certName)
     expect(cached?.invalidityTime).toBe(0)
 
-    // A second cert-revoked for the same hash overwrites.
+    // A second event for the same certificate refreshes the UI cache.
     GlobalBus.emit('cert-revoked', {
       reason: ReasonCode.KeyCompromise,
-      invalidity_time: 1_700_000_000_000_000,
+      invalidity_time: 1_700_000_000_000,
       cert_hash: 'abcdef0123456789',
-      cert_name: '/alice@example.com/wksp/alice@example.com/KEY/k1/self/v=1',
+      cert_name: '/alice@example.com/wksp/alice@example.com/KEY/k1/anchor/v=1',
     })
-    expect(lookupRevocation('abcdef0123456789')?.reason).toBe(ReasonCode.KeyCompromise)
-    expect(lookupRevocation('abcdef0123456789')?.invalidityTime).toBe(1_700_000_000_000_000)
+    expect(lookupRevocation(certName)?.reason).toBe(ReasonCode.KeyCompromise)
+    expect(lookupRevocation(certName)?.invalidityTime).toBe(1_700_000_000_000)
 
     unregister()
   })

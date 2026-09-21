@@ -19,7 +19,7 @@
             <p class="is-size-6 has-text-weight-semibold">Revoked workspace keys</p>
             <p class="is-size-7">
               {{ revocations.length === 0
-                ? 'No wkspKeys have been revoked in this session.'
+                ? 'No revoked wkspKeys are stored locally.'
                 : `${revocations.length} wkspKey${revocations.length === 1 ? '' : 's'} revoked.` }}
             </p>
           </div>
@@ -35,7 +35,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="rec in revocations" :key="rec.certHash || rec.certName">
+            <tr v-for="rec in revocations" :key="rec.certName">
               <td>
                 <code :title="rec.certName || 'unknown'">
                   {{ shortName(rec.certName) || '(unknown cert)' }}
@@ -70,7 +70,7 @@
               v-model="certNameInput"
               class="input"
               type="text"
-              placeholder="/alice@example.com/wksp/alice@example.com/KEY/&lt;kid&gt;/self/v=1"
+              placeholder="/alice@example.com/wksp/alice@example.com/KEY/&lt;kid&gt;/anchor/v=1"
               :disabled="busy"
             />
           </div>
@@ -150,10 +150,8 @@ const isMasterDevice = computed(
 
 const revocations = ref<RevocationRecord[]>([]);
 
-// The Go bridge only delivers new revocations. The list_revocations
-// rehydrate runs once on open and after each publish, so the
-// [REVOKED] list reflects the persisted in-memory state including
-// revocations from a previous session.
+// The callback delivers new records; list_revocations rebuilds the view from
+// ndnd's durable keychain state.
 async function rehydrate() {
   try {
     const existing = await ndn.api.list_revocations();
@@ -221,9 +219,7 @@ function shortHash(hash: string): string {
 
 function formatInvalidity(t: number): string {
   if (!t) return 'now';
-  // invalidityTime is unix-microseconds; render as date.
-  const ms = Math.floor(t / 1000);
-  const d = new Date(ms);
+  const d = new Date(t);
   if (Number.isNaN(d.getTime())) return 'now';
   return d.toISOString().slice(0, 10);
 }

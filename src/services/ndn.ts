@@ -37,6 +37,8 @@ interface NDNAPI {
     local: IdentityKeyInfo[];
     peers: IdentityKeyInfo[];
   }>;
+  /** List wkspKey certificates for a member in the active workspace. */
+  list_workspace_certs(identity: string): Promise<string[]>;
   /** Generate a new managed identity key pair */
   generate_identity_key(): Promise<IdentityKeyInfo>;
   /** Import an existing identity key pair (MarshalSecret format) */
@@ -68,8 +70,7 @@ interface NDNAPI {
    */
   revoke_cert(certName: string, reason: number, invalidityTime: number): Promise<string>;
   /**
-   * List all known revocation records. Returns the in-memory state
-   * received since startup; re-received on workspace reopen.
+   * List revocations for known wkspKey certificates from durable keychain state.
    */
   list_revocations(): Promise<Array<{
     cert_name: string;
@@ -244,7 +245,6 @@ export interface SvsAloApi {
     on_mls_commit_ref?: SvsAloSub<MlsRefPub>;
     on_refresh_ping?: SvsAloSub<RefreshPingPub>;
     on_refresh_pong?: SvsAloSub<RefreshPongPub>;
-    on_revocation?: SvsAloSub<RevocationPub>;
   }): Promise<void>;
 
   /** Awareness instance piggybacking on this SVS instance */
@@ -273,14 +273,6 @@ export type RefreshPongPub = SvsAloPubInfo & {
   responder: string;
   freshness: number;
   sent_at: string;
-};
-
-/** Published revocation record. */
-export type RevocationPub = SvsAloPubInfo & {
-  reason: number;
-  invalidity_time: number;
-  cert_hash: string;
-  cert_name: string;
 };
 
 /** API for Awareness */

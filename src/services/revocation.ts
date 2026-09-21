@@ -3,11 +3,8 @@
  * plus the snake-case -> camelCase bridge from the Go-side
  * cert-revoked event.
  *
- * v2: the v1 RevocationRecord had publisher / boot_time / seq_num
- * fields from the SVS ALO publication. Those are gone. v2 keys
- * records by cert hash (a SHA-256 hex string) and stores only the
- * fields the UI needs: reason, invalidity time, and the cert name
- * the record applies to.
+ * The cache is keyed by exact certificate name so certificate versions that
+ * reuse a public key remain distinct. ndnd's keychain store is authoritative.
  */
 
 import { GlobalBus } from '@/services/event-bus';
@@ -24,15 +21,15 @@ export type ReasonCodeValue = (typeof ReasonCode)[keyof typeof ReasonCode];
 
 export interface RevocationRecord {
   reason: ReasonCodeValue;
-  /** RFC 5280 §5.3.2; 0 = "now", or unix-us timestamp. */
+  /** RFC 5280 §5.3.2; 0 = "now", or Unix-millisecond timestamp. */
   invalidityTime: number;
-  /** SHA-256 of the cert wire bytes, hex-encoded. */
+  /** SHA-256 of the certificate's public-key content, hex-encoded. */
   certHash: string;
-  /** Full cert NDN name; empty if the cert is unknown to us. */
+  /** Full certificate NDN name. */
   certName: string;
 }
 
-const revokedByHash = new Map<string, RevocationRecord>();
+const revokedByName = new Map<string, RevocationRecord>();
 
 /**
  * Cache a revocation. State-only: does NOT emit cert-revoked. The
@@ -41,25 +38,25 @@ const revokedByHash = new Map<string, RevocationRecord>();
  * cache.
  */
 export function recordRevocation(rec: RevocationRecord): void {
-  if (!rec.certHash) return;
-  revokedByHash.set(rec.certHash, rec); // latest-wins
+  if (!rec.certName) return;
+  revokedByName.set(rec.certName, rec);
 }
 
-export function lookupRevocation(certHash: string): RevocationRecord | undefined {
-  return revokedByHash.get(certHash);
+export function lookupRevocation(certName: string): RevocationRecord | undefined {
+  return revokedByName.get(certName);
 }
 
-export function isRevoked(certHash: string): boolean {
-  return revokedByHash.has(certHash);
+export function isRevoked(certName: string): boolean {
+  return revokedByName.has(certName);
 }
 
 export function listRevocations(): RevocationRecord[] {
-  return Array.from(revokedByHash.values());
+  return Array.from(revokedByName.values());
 }
 
 /** Clear the in-memory cache. Test-only. */
 export function clearRevocations(): void {
-  revokedByHash.clear();
+  revokedByName.clear();
 }
 
 /**
