@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 	"fmt"
 	"runtime"
+	"sync"
 	"syscall/js"
 	"time"
 
@@ -17,7 +18,12 @@ import (
 	"github.com/named-data/ndnd/std/security/keychain"
 	"github.com/named-data/ndnd/std/security/trust_schema"
 	jsutil "github.com/named-data/ndnd/std/utils/js"
+	"github.com/pulsejet/ownly/ndn/app/tlv"
 )
+
+// logOnce guards the one-time legacy-cert warning emitted from
+// resolveCertWire so it doesn't spam the log on every call.
+var logOnce sync.Once
 
 type SessionCipher struct {
 	SessionId string
@@ -269,6 +275,36 @@ func (a *App) JsApi() js.Value {
 			return a.identityOverview()
 		}),
 
+		// list_workspace_certs(identity): Promise<string[]>;
+		"list_workspace_certs": jsutil.AsyncFunc(func(this js.Value, p []js.Value) (any, error) {
+			if len(p) == 0 || p[0].String() == "" {
+				return nil, fmt.Errorf("missing member identity")
+			}
+			if a.bootSyncSession == nil {
+				return nil, fmt.Errorf("no active workspace")
+			}
+			identity, err := enc.NameFromStr(p[0].String())
+			if err != nil {
+				return nil, fmt.Errorf("invalid member identity: %w", err)
+			}
+			wkspName := a.bootSyncSession.group.Prefix(-1)
+			target := wkspName.Append(identity...)
+			out := js.Global().Get("Array").New()
+			for _, kcIdentity := range a.keychain.Identities() {
+				if !kcIdentity.Name().Equal(target) {
+					continue
+				}
+				for _, key := range kcIdentity.Keys() {
+					for _, certName := range key.UniqueCerts() {
+						if tlv.IsWkspKeyCertName(certName) {
+							out.Call("push", certName.String())
+						}
+					}
+				}
+			}
+			return out, nil
+		}),
+
 		// generate_identity_key(): Promise<any>;
 		"generate_identity_key": jsutil.AsyncFunc(func(this js.Value, p []js.Value) (any, error) {
 			entry, err := a.generateIdentityKey()
@@ -403,10 +439,7 @@ func (a *App) JsApi() js.Value {
 		// list_revocations(): Promise<Array<{cert_name; reason; invalidity_time; cert_hash}>>;
 		"list_revocations": jsutil.AsyncFunc(func(this js.Value, p []js.Value) (any, error) {
 			out := js.Global().Get("Array").New()
-			if a.bootSyncSession == nil || a.bootSyncSession.revokedCerts == nil {
-				return out, nil
-			}
-			for _, e := range a.bootSyncSession.revokedCerts.listWithName() {
+			for _, e := range a.knownRevocations() {
 				out.Call("push", js.ValueOf(map[string]any{
 					"cert_name":       e.Name.String(),
 					"reason":          int(e.Rec.Reason),
@@ -427,15 +460,16 @@ func (a *App) JsApi() js.Value {
 				return nil, fmt.Errorf("no active workspace")
 			}
 			wkspName := a.bootSyncSession.group.Prefix(-1)
-			if a.trust.Suggest(wkspName.Append(enc.NewKeywordComponent("KD"))) == nil {
-				return nil, fmt.Errorf("not master of any workspace")
+			revoker, err := a.workspaceOwnerSigner(wkspName)
+			if err != nil {
+				return nil, err
 			}
-			certWire, err := a.resolveCertWire(certName)
+			certBytes, err := a.resolveCertWire(certName)
 			if err != nil {
 				return nil, err
 			}
 			recName, state, err := publishRevocationToAlo(
-				a.bootSyncSession.alo, wkspName, certName, certWire,
+				a.bootSyncSession.alo, certName, certBytes, revoker,
 				uint8(p[1].Int()), uint64(p[2].Int()),
 			)
 			if err != nil {
@@ -462,17 +496,27 @@ func (a *App) JsApi() js.Value {
 // combined "key+cert" NDN name (one extra component past the
 // cert's logical name). The exact match is the v1+ path; the prefix
 // match is the compatibility path for certs written by an older build.
-func (a *App) resolveCertWire(certName enc.Name) (enc.Wire, error) {
+// The legacy prefix fallback is logged once per process so we can
+// see if anyone is still on the older format and decide whether to
+// drop the fallback entirely in a later round.
+func (a *App) resolveCertWire(certName enc.Name) ([]byte, error) {
 	wire, err := a.store.Get(certName, false)
 	if err != nil || wire == nil {
 		if len(certName) > 0 {
 			wire, err = a.store.Get(certName.Prefix(-1), true)
+			if err == nil && wire != nil {
+				logOnce.Do(func() {
+					log.Info(nil, "resolveCertWire: legacy combined-name cert hit; "+
+						"this branch is for certs written by older app builds and may be removable",
+						"name", certName)
+				})
+			}
 		}
 	}
 	if err != nil || wire == nil {
 		return nil, fmt.Errorf("cert wire bytes not found: %s", certName)
 	}
-	return enc.Wire{wire}, nil
+	return wire, nil
 }
 
 func getTrustConfig(keychain ndn.KeyChain) (trust *security.TrustConfig, err error) {
